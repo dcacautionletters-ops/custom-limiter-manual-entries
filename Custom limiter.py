@@ -102,7 +102,6 @@ def process_grid(data_df, cols, batch_subjects, low_thresh, high_thresh, show_al
     full_grid['Theory Avg'] = full_grid[[c for c in final_subjects if not any(x in str(c).upper() for x in ["LAB", "PRACTICAL", "WORKSHOP"])]].mean(axis=1).round(2)
     full_grid['Final Avg'] = full_grid[final_subjects].mean(axis=1).round(2)
     
-    # Range Mask Logic
     grid_mask = (full_grid[final_subjects] >= low_thresh) & (full_grid[final_subjects] <= high_thresh)
     
     if show_all:
@@ -112,7 +111,6 @@ def process_grid(data_df, cols, batch_subjects, low_thresh, high_thresh, show_al
     
     if shortage_grid.empty: return None, None
     
-    # Recalculate Mask for Display and Counts
     active_mask = (shortage_grid[final_subjects] >= low_thresh) & (shortage_grid[final_subjects] <= high_thresh)
     shortage_grid['Subjects in Range'] = active_mask.sum(axis=1)
     sub_counts = active_mask.sum()
@@ -177,7 +175,6 @@ if uploaded_file:
                     s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series.split()[0]) & d_df[c_map['batch']].astype(str).str.contains(series.split()[-1])]
                     s_subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
-                    # GEN SHEET (RANGE FILTERED)
                     gen, _ = process_grid(s_df, c_map, s_subs, low_v, high_v, show_all=False)
                     if gen is not None:
                         with st.expander(f"👁️ {series} ({low_v}% - {high_v}%)"): st.dataframe(gen, hide_index=True)
@@ -186,7 +183,6 @@ if uploaded_file:
                         get_bracket_summary(s_df, c_map, s_subs, high_v).to_excel(writer, sheet_name=sn, startrow=len(gen)+2, index=False)
                         apply_styles(writer.sheets[sn], high_v)
 
-                    # GEN ALL (UNFILTERED)
                     all_g, _ = process_grid(s_df, c_map, s_subs, low_v, high_v, show_all=True)
                     if all_g is not None:
                         sn_all = f"{series} GEN ALL"[:31]
@@ -212,13 +208,25 @@ if uploaded_file:
                         st.markdown(f'<div class="glass-metric"><div class="metric-title">{row["Section"]}</div><div class="metric-value">{row["Count"]}</div></div>', unsafe_allow_html=True)
                 
                 c1, c2 = st.columns(2)
-                with c1: st.plotly_chart(px.bar(sum_df, x='Section', y='Count', title="Section Distribution", template="plotly_dark"), use_container_width=True)
+                with c1: 
+                    # ADDED COLOR BY SECTION FOR COLORFUL BARS
+                    fig_bar = px.bar(sum_df, x='Section', y='Count', color='Section',
+                                     title="Section Wise Range Distribution", 
+                                     color_discrete_sequence=px.colors.qualitative.Pastel,
+                                     template="plotly_dark")
+                    st.plotly_chart(fig_bar, use_container_width=True)
+                
                 with c2:
                     if not subject_impact.empty and subject_impact.sum() > 0:
                         impact_df = subject_impact.reset_index()
                         impact_df.columns = ['Subject', 'Students']
                         impact_df = impact_df[impact_df['Students'] > 0]
-                        st.plotly_chart(px.pie(impact_df, names='Subject', values='Students', hole=0.4, title=f"Subject Impact ({low_v}-{high_v}%)", template="plotly_dark"), use_container_width=True)
+                        # ADDED COLOR BY SUBJECT FOR COLORFUL PIE
+                        fig_pie = px.pie(impact_df, names='Subject', values='Students', 
+                                         hole=0.4, title=f"Subject Impact ({low_v}-{high_v}%)",
+                                         color='Subject', color_discrete_sequence=px.colors.qualitative.Set3,
+                                         template="plotly_dark")
+                        st.plotly_chart(fig_pie, use_container_width=True)
                 sum_df.to_excel(writer, sheet_name='SUMMARY', index=False)
             else: st.info("No data in current range.")
 
