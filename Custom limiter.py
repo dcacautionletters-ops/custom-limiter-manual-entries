@@ -55,12 +55,27 @@ def is_valid_subject(subject_name):
 def get_bracket_summary(data_df, cols, subjects, threshold):
     summary_data = []
     for sub in subjects:
+        # Rounding to 2 decimal places for 100% accuracy in bracket matching
         sub_vals = pd.to_numeric(data_df[data_df[cols['subject']] == sub][cols['attendance']], errors='coerce').dropna().round(2)
+        
         b1 = len(sub_vals[(sub_vals >= 0) & (sub_vals < 50)])
         b2 = len(sub_vals[(sub_vals >= 50) & (sub_vals < 60)])
-        b3 = len(sub_vals[(sub_vals >= 60) & (sub_vals < 70)])
+        # SPLIT 60-69.99 into two columns as requested
+        b3a = len(sub_vals[(sub_vals >= 60) & (sub_vals < 64.5)])
+        b3b = len(sub_vals[(sub_vals >= 64.5) & (sub_vals < 70)])
         b4 = len(sub_vals[(sub_vals >= 70) & (sub_vals < 75)])
-        row = {"Subject": sub, "0.00-49.99": b1, "50.00-59.99": b2, "60.00-69.99": b3, "70.00-74.99": b4, "Total": b1+b2+b3+b4}
+        
+        row = {"Subject": sub}
+        total = 0
+        if threshold > 0: row["0.00-49.99"] = b1; total += b1
+        if threshold > 50: row["50.00-59.99"] = b2; total += b2
+        if threshold > 60:
+            row["60.00-64.49"] = b3a
+            row["64.50-69.99"] = b3b # Set to 69.99 to ensure "nothing is missed"
+            total += (b3a + b3b)
+        if threshold > 70: row["70.00-74.99"] = b4; total += b4
+            
+        row["Total"] = total
         summary_data.append(row)
     return pd.DataFrame(summary_data)
 
@@ -99,9 +114,11 @@ def process_grid(data_df, cols, batch_subjects, low_thresh, high_thresh, show_al
         if sub not in full_grid.columns: full_grid[sub] = None
         full_grid[sub] = pd.to_numeric(full_grid[sub], errors='coerce').round(2)
 
-    full_grid['Theory Avg'] = full_grid[[c for c in final_subjects if not any(x in str(c).upper() for x in ["LAB", "PRACTICAL", "WORKSHOP"])]].mean(axis=1).round(2)
+    theory_cols = [c for c in final_subjects if not any(x in str(c).upper() for x in ["LAB", "PRACTICAL", "WORKSHOP"])]
+    full_grid['Theory Avg'] = full_grid[theory_cols].mean(axis=1).round(2)
     full_grid['Final Avg'] = full_grid[final_subjects].mean(axis=1).round(2)
     
+    # Range Mask Logic (Strict Boundary)
     grid_mask = (full_grid[final_subjects] >= low_thresh) & (full_grid[final_subjects] <= high_thresh)
     
     if show_all:
@@ -175,18 +192,22 @@ if uploaded_file:
                     s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series.split()[0]) & d_df[c_map['batch']].astype(str).str.contains(series.split()[-1])]
                     s_subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
+                    # GEN SHEET
                     gen, _ = process_grid(s_df, c_map, s_subs, low_v, high_v, show_all=False)
                     if gen is not None:
                         with st.expander(f"👁️ {series} ({low_v}% - {high_v}%)"): st.dataframe(gen, hide_index=True)
                         sn = f"{series} GEN"[:31]
                         gen.to_excel(writer, sheet_name=sn, index=False)
+                        # Appending updated split summary
                         get_bracket_summary(s_df, c_map, s_subs, high_v).to_excel(writer, sheet_name=sn, startrow=len(gen)+2, index=False)
                         apply_styles(writer.sheets[sn], high_v)
 
+                    # GEN ALL
                     all_g, _ = process_grid(s_df, c_map, s_subs, low_v, high_v, show_all=True)
                     if all_g is not None:
                         sn_all = f"{series} GEN ALL"[:31]
                         all_g.to_excel(writer, sheet_name=sn_all, index=False)
+                        get_bracket_summary(s_df, c_map, s_subs, high_v).to_excel(writer, sheet_name=sn_all, startrow=len(all_g)+2, index=False)
                         apply_styles(writer.sheets[sn_all], high_v)
                     
                     for sec in sorted(s_df[c_map['batch']].unique()):
@@ -195,6 +216,7 @@ if uploaded_file:
                         if grid is not None:
                             sn_sec = str(sec).replace("/", "-")[:31]
                             grid.to_excel(writer, sheet_name=sn_sec, index=False)
+                            get_bracket_summary(sec_df, c_map, s_subs, high_v).to_excel(writer, sheet_name=sn_sec, startrow=len(grid)+2, index=False)
                             apply_styles(writer.sheets[sn_sec], high_v)
                             summaries.append({'Section': sec, 'Count': len(grid)-1})
                             subject_impact = subject_impact.add(counts, fill_value=0)
@@ -209,24 +231,17 @@ if uploaded_file:
                 
                 c1, c2 = st.columns(2)
                 with c1: 
-                    # ADDED COLOR BY SECTION FOR COLORFUL BARS
-                    fig_bar = px.bar(sum_df, x='Section', y='Count', color='Section',
-                                     title="Section Wise Range Distribution", 
-                                     color_discrete_sequence=px.colors.qualitative.Pastel,
-                                     template="plotly_dark")
-                    st.plotly_chart(fig_bar, use_container_width=True)
-                
+                    st.plotly_chart(px.bar(sum_df, x='Section', y='Count', color='Section',
+                                     title="Colorful Section Distribution", color_discrete_sequence=px.colors.qualitative.Pastel,
+                                     template="plotly_dark"), use_container_width=True)
                 with c2:
                     if not subject_impact.empty and subject_impact.sum() > 0:
                         impact_df = subject_impact.reset_index()
                         impact_df.columns = ['Subject', 'Students']
                         impact_df = impact_df[impact_df['Students'] > 0]
-                        # ADDED COLOR BY SUBJECT FOR COLORFUL PIE
-                        fig_pie = px.pie(impact_df, names='Subject', values='Students', 
-                                         hole=0.4, title=f"Subject Impact ({low_v}-{high_v}%)",
-                                         color='Subject', color_discrete_sequence=px.colors.qualitative.Set3,
-                                         template="plotly_dark")
-                        st.plotly_chart(fig_pie, use_container_width=True)
+                        st.plotly_chart(px.pie(impact_df, names='Subject', values='Students', hole=0.4, 
+                                         title=f"Colorful Subject Impact", color_discrete_sequence=px.colors.qualitative.Set3,
+                                         template="plotly_dark"), use_container_width=True)
                 sum_df.to_excel(writer, sheet_name='SUMMARY', index=False)
             else: st.info("No data in current range.")
 
