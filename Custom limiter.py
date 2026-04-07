@@ -55,7 +55,8 @@ def is_valid_subject(subject_name):
 def get_bracket_summary(data_df, cols, subjects, threshold):
     summary_data = []
     for sub in subjects:
-        sub_vals = pd.to_numeric(data_df[data_df[cols['subject']] == sub][cols['attendance']], errors='coerce').dropna()
+        # Added .round(2) for consistency in summary brackets
+        sub_vals = pd.to_numeric(data_df[data_df[cols['subject']] == sub][cols['attendance']], errors='coerce').dropna().round(2)
         
         b1 = len(sub_vals[(sub_vals >= 0) & (sub_vals < 50)])
         b2 = len(sub_vals[(sub_vals >= 50) & (sub_vals < 60)])
@@ -64,23 +65,13 @@ def get_bracket_summary(data_df, cols, subjects, threshold):
         
         row = {"Subject": sub}
         total = 0
-        
-        if threshold > 0:
-            row["0.00-49.99"] = b1
-            total += b1
-        if threshold > 50:
-            row["50.00-59.99"] = b2
-            total += b2
-        if threshold > 60:
-            row["60.00-69.99"] = b3
-            total += b3
-        if threshold > 70:
-            row["70.00-74.99"] = b4
-            total += b4
+        if threshold > 0: row["0.00-49.99"] = b1; total += b1
+        if threshold > 50: row["50.00-59.99"] = b2; total += b2
+        if threshold > 60: row["60.00-69.99"] = b3; total += b3
+        if threshold > 70: row["70.00-74.99"] = b4; total += b4
             
         row["Total"] = total
         summary_data.append(row)
-        
     return pd.DataFrame(summary_data)
 
 def apply_styles(ws, threshold, is_summary=False):
@@ -111,13 +102,13 @@ def apply_styles(ws, threshold, is_summary=False):
 def process_grid(data_df, cols, batch_subjects, low_thresh, high_thresh, show_all=False):
     if data_df.empty: return None, None
     data_df = data_df.copy()
+    # ROUNDING APPLIED FOR BULLETPROOF MATCHING
     data_df[cols['attendance']] = pd.to_numeric(data_df[cols['attendance']], errors='coerce').round(2)
     
     full_grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch'], cols['sem']],
                                     columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
     
     final_subjects = [s for s in batch_subjects if is_valid_subject(s)]
-    
     for sub in final_subjects:
         if sub not in full_grid.columns: full_grid[sub] = None
         full_grid[sub] = pd.to_numeric(full_grid[sub], errors='coerce').round(2)
@@ -126,7 +117,7 @@ def process_grid(data_df, cols, batch_subjects, low_thresh, high_thresh, show_al
     full_grid['Theory Avg'] = full_grid[theory_cols].mean(axis=1).round(2)
     full_grid['Final Avg'] = full_grid[final_subjects].mean(axis=1).round(2)
     
-    # Strict range boundary check
+    # Unified Range Mask
     range_mask = (full_grid[final_subjects] >= low_thresh) & (full_grid[final_subjects] <= high_thresh)
     
     if show_all:
@@ -136,7 +127,7 @@ def process_grid(data_df, cols, batch_subjects, low_thresh, high_thresh, show_al
     
     if shortage_grid.empty: return None, None
     
-    # Update mask for count row to ensure perfect synchronization
+    # Recalculate grid_mask on the final subset to ensure counts are absolute
     grid_mask = (shortage_grid[final_subjects] >= low_thresh) & (shortage_grid[final_subjects] <= high_thresh)
     shortage_grid['Subjects in Range'] = grid_mask.sum(axis=1)
     sub_counts = grid_mask.sum()
@@ -148,7 +139,8 @@ def process_grid(data_df, cols, batch_subjects, low_thresh, high_thresh, show_al
     shortage_grid.insert(0, 'Sl No.', range(1, len(shortage_grid) + 1))
     final_cols = ['Sl No.', cols['roll'], cols['name'], cols['batch'], cols['sem']] + final_subjects + ['Subjects in Range', 'Theory Avg', 'Final Avg']
     
-    count_row = pd.DataFrame([["", "", "", "", f"Count ({low_thresh}-{high_thresh}%)"] + [sub_counts[s] for s in final_subjects] + ["", "", ""]], columns=final_cols)
+    count_label = f"Count ({low_thresh}-{high_thresh}%)"
+    count_row = pd.DataFrame([["", "", "", "", count_label] + [sub_counts[s] for s in final_subjects] + ["", "", ""]], columns=final_cols)
     shortage_grid = pd.concat([shortage_grid, count_row], ignore_index=True)
     
     return shortage_grid, sub_counts
@@ -180,96 +172,59 @@ if uploaded_file:
     
     with st.sidebar:
         st.markdown("### 🛠️ Global Parameters")
-        
-        # ONLY CHANGE: Replaced single slider with two Number Inputs
-        col_low, col_high = st.columns(2)
-        with col_low:
-            low_thresh = st.number_input("From (%)", 0.00, 100.00, 0.00, 0.01, format="%.2f")
-        with col_high:
-            high_thresh = st.number_input("To (%)", 0.00, 100.00, 75.00, 0.01, format="%.2f")
+        col_l, col_h = st.columns(2)
+        with col_l: low_in = st.number_input("From (%)", 0.00, 100.00, 0.00, 0.01, format="%.2f")
+        with col_h: high_in = st.number_input("To (%)", 0.00, 100.00, 75.00, 0.01, format="%.2f")
         
         dept_choice = st.selectbox("Select Department", ["All Departments"] + sorted(df['Dept'].unique()))
-        
         st.divider()
         st.markdown("### 🔍 Exclusion Filters")
         exclude_subjects = st.multiselect("Exclude Subjects/Faculty", all_subjects)
-        
         if st.button("Logout"): st.session_state.authenticated = False; st.rerun()
 
-    if exclude_subjects:
-        df = df[~df[c_map['subject']].isin(exclude_subjects)]
-        
-    if dept_choice != "All Departments":
-        df = df[df['Dept'] == dept_choice]
-        active_depts = [dept_choice]
-    else:
-        active_depts = sorted(df['Dept'].unique())
+    if exclude_subjects: df = df[~df[c_map['subject']].isin(exclude_subjects)]
+    active_depts = [dept_choice] if dept_choice != "All Departments" else sorted(df['Dept'].unique())
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        pd.DataFrame({"Report": [f"Filtered: {dept_choice} Range {low_thresh}% to {high_thresh}%"]}).to_excel(writer, sheet_name="Audit", index=False)
+        pd.DataFrame({"Report": [f"Filtered: {dept_choice} Range {low_in}% to {high_in}%"]}).to_excel(writer, sheet_name="Audit", index=False)
         summaries, subject_impact = [], pd.Series(dtype=float)
-        
         tabs = st.tabs(["📊 COMMAND CENTER"] + [f"💎 {d}" for d in active_depts])
 
         for d_idx, dept in enumerate(active_depts):
             d_df = df[df['Dept'] == dept]
-            unique_batches = d_df[c_map['batch']].astype(str).unique()
-            series_list = set()
-            for b in unique_batches:
-                b_upper = b.upper()
-                b_parts = b.split()
-                if "BCA" in b_upper:
-                    year = next((p for p in b_parts if p.isdigit()), "Series")
-                    series_list.add(f"BCA {year}")
-                elif "MCA" in b_upper:
-                    year = next((p for p in b_parts if p.isdigit()), "Series")
-                    series_list.add(f"MCA {year}")
-                elif "MBA" in b_upper:
-                    series_list.add(' '.join(b_parts[:3])) 
-                elif "MCOM" in b_upper:
-                    series_list.add(' '.join(b_parts[:3])) 
-                else:
-                    series_list.add(' '.join(b_parts[:2]))
-            
-            series_list = sorted(list(series_list))
+            series_list = sorted(list(set(f"{b.split()[0]} {next((p for p in b.split() if p.isdigit()), 'Series')}" for b in d_df[c_map['batch']].astype(str).unique())))
             
             with tabs[d_idx+1]:
                 for series in series_list:
-                    s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series.split()[0]) & 
-                                d_df[c_map['batch']].astype(str).str.contains(series.split()[-1])]
-                    
+                    s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series.split()[0]) & d_df[c_map['batch']].astype(str).str.contains(series.split()[-1])]
                     s_subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
-                    # GEN SHEET (RANGE FILTERED)
-                    gen_grid, _ = process_grid(s_df, c_map, s_subs, low_thresh, high_thresh, show_all=False)
+                    # GEN SHEET
+                    gen_grid, _ = process_grid(s_df, c_map, s_subs, low_in, high_in, show_all=False)
                     if gen_grid is not None:
-                        with st.expander(f"👁️ {series} RANGE SUMMARY"):
-                            st.dataframe(gen_grid, hide_index=True, use_container_width=True)
+                        with st.expander(f"👁️ {series} RANGE SUMMARY"): st.dataframe(gen_grid, hide_index=True)
                         sn = f"{series} GEN"[:31]
                         gen_grid.to_excel(writer, sheet_name=sn, index=False)
-                        get_bracket_summary(s_df, c_map, s_subs, high_thresh).to_excel(writer, sheet_name=sn, startrow=len(gen_grid)+2, index=False)
-                        apply_styles(writer.sheets[sn], high_thresh)
+                        get_bracket_summary(s_df, c_map, s_subs, high_in).to_excel(writer, sheet_name=sn, startrow=len(gen_grid)+2, index=False)
+                        apply_styles(writer.sheets[sn], high_in)
 
-                    # GEN ALL SHEET (UNFILTERED)
-                    all_grid, _ = process_grid(s_df, c_map, s_subs, low_thresh, high_thresh, show_all=True)
+                    # GEN ALL SHEET
+                    all_grid, _ = process_grid(s_df, c_map, s_subs, low_in, high_in, show_all=True)
                     if all_grid is not None:
                         sn_all = f"{series} GEN ALL"[:31]
                         all_grid.to_excel(writer, sheet_name=sn_all, index=False)
-                        get_bracket_summary(s_df, c_map, s_subs, high_thresh).to_excel(writer, sheet_name=sn_all, startrow=len(all_grid)+2, index=False)
-                        apply_styles(writer.sheets[sn_all], high_thresh)
+                        get_bracket_summary(s_df, c_map, s_subs, high_in).to_excel(writer, sheet_name=sn_all, startrow=len(all_grid)+2, index=False)
+                        apply_styles(writer.sheets[sn_all], high_in)
                     
-                    sections = sorted(s_df[c_map['batch']].unique())
-                    for sec in sections:
+                    for sec in sorted(s_df[c_map['batch']].unique()):
                         sec_df = s_df[s_df[c_map['batch']] == sec]
-                        grid, counts = process_grid(sec_df, c_map, s_subs, low_thresh, high_thresh)
+                        grid, counts = process_grid(sec_df, c_map, s_subs, low_in, high_in)
                         if grid is not None:
-                            with st.expander(f"👁️ {sec}: {len(grid)-1} Students in Range"):
-                                st.dataframe(grid, hide_index=True, use_container_width=True)
                             sn_sec = str(sec).replace("/", "-")[:31]
                             grid.to_excel(writer, sheet_name=sn_sec, index=False)
-                            get_bracket_summary(sec_df, c_map, s_subs, high_thresh).to_excel(writer, sheet_name=sn_sec, startrow=len(grid)+2, index=False)
-                            apply_styles(writer.sheets[sn_sec], high_thresh)
+                            get_bracket_summary(sec_df, c_map, s_subs, high_in).to_excel(writer, sheet_name=sn_sec, startrow=len(grid)+2, index=False)
+                            apply_styles(writer.sheets[sn_sec], high_in)
                             summaries.append({'Section': sec, 'Count': len(grid)-1})
                             subject_impact = subject_impact.add(counts, fill_value=0)
 
@@ -280,17 +235,8 @@ if uploaded_file:
                 for idx, row in sum_df.iterrows():
                     with m_cols[idx % 4]:
                         st.markdown(f'<div class="glass-metric"><div class="metric-title">{row["Section"]}</div><div class="metric-value">{row["Count"]}</div></div>', unsafe_allow_html=True)
-                
-                c1, c2 = st.columns(2)
-                with c1: st.plotly_chart(px.bar(sum_df, x='Section', y='Count', color='Section', template="plotly_dark"), use_container_width=True)
-                with c2:
-                    if not subject_impact.empty and subject_impact.sum() > 0:
-                        impact_df = subject_impact.reset_index()
-                        impact_df.columns = ['Subject', 'Students']
-                        if not impact_df.empty:
-                            st.plotly_chart(px.pie(impact_df.head(10), names='Subject', values='Students', hole=0.4, title="Top Subject Impact", template="plotly_dark"), use_container_width=True)
+                st.plotly_chart(px.bar(sum_df, x='Section', y='Count', color='Section', template="plotly_dark"), use_container_width=True)
                 sum_df.to_excel(writer, sheet_name='SUMMARY', index=False)
-            else:
-                st.success(f"No students found between {low_thresh}% and {high_thresh}%.")
+            else: st.success(f"No students found in range {low_in}% to {high_in}%.")
 
-    st.download_button(f"📥 Download {dept_choice} Report", output.getvalue(), f"VMS_{dept_choice}_Report.xlsx", use_container_width=True)
+    st.download_button(f"📥 Download {dept_choice} Report", output.getvalue(), f"VMS_Report.xlsx", use_container_width=True)
