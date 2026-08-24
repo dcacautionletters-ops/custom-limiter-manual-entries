@@ -45,7 +45,7 @@ if not st.session_state.authenticated:
 
 # --- 3. CORE LOGIC ---
 KEYWORDS_TO_IGNORE = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SWIMMING", "ZUMBA", "TABLE TENNIS", 
-                      "FREESLOT", "FREE SLOT", "SOFT SKILL", "ATOM", "DSA"]
+                      "FREESLOT", "FREE SLOT", "SOFT SKILL", "ATOM", "DSA". "LIB", "LIBRARY", "MENTORING"]
 ATT_COL_NAME = "Attended Hours with Approved Leave Percentage"
 
 def is_valid_subject(subject_name):
